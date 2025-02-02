@@ -3,15 +3,18 @@
 import { useState, useRef } from "react";
 
 export default function Home() {
-  const [audioClips, setAudioClips] = useState<{ url: string; id: number }[]>(
-    []
-  );
+  const [audioClips, setAudioClips] = useState<
+    { url: string; id: number; loop: boolean }[]
+  >([]);
   const [isRecording, setIsRecording] = useState(false);
   const [audioContext, setAudioContext] = useState<AudioContext | null>(null);
   const [gainNode, setGainNode] = useState<GainNode | null>(null);
   const [filterNode, setFilterNode] = useState<BiquadFilterNode | null>(null);
   const [pitchShift, setPitchShift] = useState(1);
   const [volume, setVolume] = useState(1);
+  const [playingSources, setPlayingSources] = useState<
+    Map<number, AudioBufferSourceNode>
+  >(new Map());
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
 
   const startRecording = async () => {
@@ -27,7 +30,7 @@ export default function Home() {
     mediaRecorder.onstop = () => {
       const audioBlob = new Blob(audioChunks, { type: "audio/wav" });
       const url = URL.createObjectURL(audioBlob);
-      setAudioClips((prev) => [...prev, { url, id: prev.length }]);
+      setAudioClips((prev) => [...prev, { url, id: prev.length, loop: false }]);
     };
 
     mediaRecorder.start();
@@ -35,8 +38,10 @@ export default function Home() {
   };
 
   const stopRecording = () => {
-    mediaRecorderRef.current?.stop();
-    setIsRecording(false);
+    if (mediaRecorderRef.current) {
+      mediaRecorderRef.current.stop();
+      setIsRecording(false);
+    }
   };
 
   const setupAudioContext = () => {
@@ -52,7 +57,11 @@ export default function Home() {
     setFilterNode(filter);
   };
 
-  const playAudioWithEffects = async (url: string) => {
+  const playAudioWithEffects = async (
+    url: string,
+    id: number,
+    loop: boolean
+  ) => {
     if (!audioContext) return;
 
     const response = await fetch(url);
@@ -65,15 +74,45 @@ export default function Home() {
       pitchShift,
       audioContext.currentTime
     );
+    sourceNode.loop = loop;
 
     const gainNode = audioContext.createGain();
     gainNode.gain.setValueAtTime(volume, audioContext.currentTime);
 
-    sourceNode
-      .connect(gainNode)
-      .connect(filterNode!)
-      .connect(audioContext.destination);
+    sourceNode.connect(gainNode).connect(audioContext.destination);
     sourceNode.start();
+
+    setPlayingSources((prev) => {
+      const newMap = new Map(prev);
+      newMap.set(id, sourceNode);
+      return newMap;
+    });
+
+    sourceNode.onended = () => {
+      setPlayingSources((prev) => {
+        const newMap = new Map(prev);
+        newMap.delete(id);
+        return newMap;
+      });
+    };
+  };
+
+  const toggleLoop = (id: number) => {
+    setAudioClips((prevClips) =>
+      prevClips.map((clip) =>
+        clip.id === id ? { ...clip, loop: !clip.loop } : clip
+      )
+    );
+
+    if (playingSources.has(id)) {
+      const sourceNode = playingSources.get(id);
+      sourceNode?.stop();
+      setPlayingSources((prev) => {
+        const newMap = new Map(prev);
+        newMap.delete(id);
+        return newMap;
+      });
+    }
   };
 
   return (
@@ -104,13 +143,20 @@ export default function Home() {
       </button>
       <div className="grid grid-cols-3 gap-4 mt-4">
         {audioClips.map((clip) => (
-          <button
-            key={clip.id}
-            className="bg-purple-500 w-20 h-20 rounded-lg flex items-center justify-center"
-            onClick={() => playAudioWithEffects(clip.url)}
-          >
-            {clip.id + 1}
-          </button>
+          <div key={clip.id} className="flex flex-col items-center">
+            <button
+              className="bg-purple-500 w-20 h-20 rounded-lg flex items-center justify-center"
+              onClick={() => playAudioWithEffects(clip.url, clip.id, clip.loop)}
+            >
+              {clip.id + 1}
+            </button>
+            <button
+              className="bg-yellow-500 px-2 py-1 rounded mt-2"
+              onClick={() => toggleLoop(clip.id)}
+            >
+              {clip.loop ? "Disable Loop" : "Enable Loop"}
+            </button>
+          </div>
         ))}
       </div>
       <div className="mt-4">
@@ -119,7 +165,7 @@ export default function Home() {
           type="range"
           min="0.5"
           max="2"
-          step="0.1"
+          step="0.01"
           value={pitchShift}
           onChange={(e) => setPitchShift(parseFloat(e.target.value))}
         />
